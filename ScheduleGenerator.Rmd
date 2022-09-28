@@ -1,0 +1,147 @@
+---
+title: "Overlapping Schedule Maker"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: github_document
+knit: (function(inputFile, encoding) { 
+    rmarkdown::render(
+        inputFile, encoding = encoding, 
+        output_file = file.path(
+            dirname(inputFile), paste0('README.md'))) 
+    })
+---
+
+# What is This For??? 
+This provides a function and a sub-function that converts weekly schedule data into a plot of overlapping time-boxes, in order to answer questions like "when does a group of people have availability?" or "Who is busy at a given time?"  
+
+It was initially conceived of in the context of higher ed student schedules, but could be used for group schedules in any other context, or room/resource schedules as well (although hopefully with fewer overlaps in those cases). Since the plotting is done by a function, this code can easily be used to generate multiple outputs for different groups or resources within an organization.  
+
+## Input Data
+This is designed to work with a dataset, which has one row per scheduled event, and the below columns:
+
+- ID: identifies the people/groups/entities to whom the schedules belong
+- BEGIN_TIME: formatted as HHMM in military time
+- END_TIME: formatted as HHMM in military time
+- MONDAY_IND: equal to "M" if the event occurs on Mondays, else null
+- TUESDAY_IND: equal to "T" if the event occurs on Tuesdays, else null (not saying this is the ideal format, but it's the one I was given)
+- WEDNESDAY: equal to "W" if the event occurs on Wednesdays, else null 
+- THURSDAY_IND: equal to "R" if the event occurs on Thursdays, else null 
+- FRIDAY_IND: equal to "F" if the event occurs on Fridays, else null (see above)
+- SATURDAY_IND: equal to "S" if the event occurs on Saturday, else null 
+- SUNDAY_IND: equal to "U" if the event occurs on Sunday, else null 
+
+But it could just as easily be converted from any weekly schedule-type data that isn't in a work management/email/meeting application already.
+
+This will plot the schedules accurately whether someone enters a daily activity on 5/7 separate line items, or enters it on one line with each indicator populated. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(hms)
+
+Schedule <- read.csv("Schedule.csv", colClasses = c("TUESDAY_IND"="character","FRIDAY_IND"="character"))
+
+## standardizing types
+Schedule$ID <- as.factor(Schedule$ID)
+
+Schedule$MONDAY_IND[Schedule$MONDAY_IND == "NULL" | is.na(Schedule$MONDAY_IND)] <- ''
+Schedule$TUESDAY_IND[Schedule$TUESDAY_IND == "NULL"| is.na(Schedule$TUESDAY_IND)] <- ''
+Schedule$WEDNESDAY_IND[Schedule$WEDNESDAY_IND == "NULL"| is.na(Schedule$WEDNESDAY_IND)] <- ''
+Schedule$THURSDAY_IND[Schedule$THURSDAY_IND == "NULL"| is.na(Schedule$THURSDAY_IND)] <- ''
+Schedule$FRIDAY_IND[Schedule$FRIDAY_IND == "NULL"| is.na(Schedule$FRIDAY_IND)] <- ''
+Schedule$SATURDAY_IND[Schedule$SATURDAY_IND == "NULL"| is.na(Schedule$SATURDAY_IND)] <- ''
+Schedule$SUNDAY_IND[Schedule$SUNDAY_IND == "NULL"| is.na(Schedule$SUNDAY_IND)] <- ''
+
+# same individual cannot be in two places -- if you have to account for "double booking" you could incorporate an event ID and modify this 
+Schedule <- Schedule %>% unique() 
+
+
+DayPlotter <- function(SliceDF, xcent) {
+  if (nrow(SliceDF) == 0) {r <- geom_blank()}
+  else {
+    ## add a faint rectangle for each Schedule item, stretching from begin time down to end time, with width = .8
+    ## sprint f --> to string but adds leading zero when needed
+    ## as.POSIXct converts to datetime, which gets the HH:MM required for hm() -- there may be a way to do this in sprintf but I can't figure it out
+    ## substr gets the h/m from the time, hm formats to hms, as.numeric formats to numeric for the axis plotting
+    r <- geom_rect(SliceDF, 
+              mapping=aes(
+                ymin = (sprintf("%04.0f", BEGIN_TIME) %>% as.POSIXct(format="%H%M") %>% substr(12, 16) %>% hm() %>% as.numeric()),
+                ymax= (sprintf("%04.0f", END_TIME) %>% as.POSIXct(format="%H%M") %>% substr(12, 16) %>% hm() %>% as.numeric()),
+                xmin = xcent - .4,
+                xmax = xcent + .4,
+                fill = ID,
+              ),
+              alpha = .1
+         )
+  }
+  r
+}
+ 
+
+SchedulePlotter <- function(SchedDF) {
+    ## for Y axis ticks -- configure based on min/max timeframe in your data
+    labs <- c("7:00", "8:00", "9:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","17:00", "18:00", "19:00", "20:00", "21:00") 
+    nums <- labs %>% hm() %>% as.numeric() # y axis will be based on numeric time behind the scenes
+    
+    plot <- ggplot() + 
+    ## plots the rectangles for each day between n.1-n.9 of each x axis integer
+    DayPlotter(SchedDF[which(SchedDF$MONDAY_IND == "M"),], .5) + 
+    DayPlotter(SchedDF[which(SchedDF$TUESDAY_IND == "T"),],  1.5) + 
+    DayPlotter(SchedDF[which(SchedDF$WEDNESDAY_IND == "W"),], 2.5) + 
+    DayPlotter(SchedDF[which(SchedDF$THURSDAY_IND == "R"),], 3.5) + 
+    DayPlotter(SchedDF[which(SchedDF$FRIDAY_IND == "F"),], 4.5) + 
+    DayPlotter(SchedDF[which(SchedDF$SATURDAY_IND == "S"),], 5.5) + 
+    DayPlotter(SchedDF[which(SchedDF$SUNDAY_IND == "U"),], 6.5) +
+    scale_y_reverse(breaks=nums,
+                    labels = format(as.POSIXct(labs, format="%H:%M"), '%I:%M %p')) +  # uses breaks/nums for axis
+    theme_classic() +
+    # only use if incorporating a shifting data source & running query alongside R process
+    labs(caption = paste("Last Updated: ", format(Sys.time(), tz="America/Chicago",usetz=TRUE))) 
+    
+    ## add sunday axis labels only if those entries exist 
+    if (length(SchedDF[which(SchedDF$SUNDAY_IND == "U"),]$ID) != 0) {
+        plot <- plot +  
+                scale_x_continuous(breaks=c(0.5,1.5,2.5,3.5,4.5,5.5, 6.5),
+                                   labels=c("Monday", "Tuesday", "Wednesday","Thursday", "Friday", "Saturday", "Sunday")) 
+    }
+    
+    ## add saturday  axis labels only if those entries exist & Sunday entries do not
+    if (length(SchedDF[which(SchedDF$SATURDAY_IND == "S"),]$ID) != 0 && length(SchedDF[which(SchedDF$SUNDAY_IND == "U"),]$ID) == 0) {
+        plot <- plot + 
+                scale_x_continuous(breaks=c(0.5,1.5,2.5,3.5,4.5,5.5),
+                                   labels=c("Monday", "Tuesday", "Wednesday","Thursday", "Friday", "Saturday")) 
+    } 
+    
+
+    
+    ## label x axis if no saturday / sunday entries
+    if (length(SchedDF[which(SchedDF$SATURDAY_IND == "S"),]$ID) == 0 && length(SchedDF[which(SchedDF$SUNDAY_IND == "U"),]$ID) == 0) {
+        plot <- plot  + scale_x_continuous(breaks=c(0.5,1.5,2.5,3.5,4.5),
+                                           labels=c("Monday", "Tuesday", "Wednesday","Thursday", "Friday"))  
+    }
+    plot
+}
+```
+
+## Functions
+**Sub-function:** DayPlotter is a sub function that takes timed events that would be on the same day (SliceDF) and creates a series of geom_rects (with position controlled by xcent). This output of this function will be unformatted, unflipped, etc. and have numeric time value. 
+
+Example:
+
+```{r, echo=TRUE}
+ggplot() + Schedule %>% filter(MONDAY_IND == "M") %>% DayPlotter(.5)
+```
+
+**Main function:** SchedulePlotter takes a dataframe of the format specified at the top of this doc, creates daily plots using the sub-fucntion DayPlotter, and then combines / formats them into a weekly schedule. 
+
+Example: 
+
+```{r, echo=TRUE}
+Schedule %>% SchedulePlotter()
+```
+
+Please note the ability to color as needed by individual/group/etc. for added information OR to use a single color if that information is not relevant. 
+
